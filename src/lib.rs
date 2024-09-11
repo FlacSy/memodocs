@@ -4,7 +4,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString};
-use pyo3::exceptions::{PyOSError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyValueError, PyKeyError};
+use std::sync::{Arc, Mutex};
+
 
 /// A simple document-oriented in-memory database with persistent storage capabilities.
 ///
@@ -15,14 +17,14 @@ use pyo3::exceptions::{PyOSError, PyValueError};
 ///     data (dict): A dictionary storing documents (key-value pairs) in memory.
 ///     file_path (str): The path to the file where the database is saved.
 #[pyclass]
-pub struct DocumentDB {
-    data: HashMap<String, PyObject>,
+pub struct MemoDocsDB {
+    data: Arc<Mutex<HashMap<String, PyObject>>>,
     file_path: String,
 }
 
 #[pymethods]
-impl DocumentDB {
-    /// Creates a new `DocumentDB` instance.
+impl MemoDocsDB {
+    /// Creates a new `MemoDocsDB` instance.
     ///
     /// # Arguments
     ///
@@ -30,17 +32,17 @@ impl DocumentDB {
     ///
     /// # Returns
     ///
-    /// `DocumentDB`: A new instance of the `DocumentDB` class.
+    /// `MemoDocsDB`: A new instance of the `MemoDocsDB` class.
     ///
     /// # Example
     ///
     /// ```python
-    /// db = DocumentDB("data.db")
+    /// db = MemoDocsDB("data.db")
     /// ```
     #[new]
     pub fn new(file_path: &str) -> Self {
-        DocumentDB {
-            data: HashMap::new(),
+        MemoDocsDB {
+            data: Arc::new(Mutex::new(HashMap::new())),
             file_path: file_path.to_string(),
         }
     }
@@ -57,10 +59,14 @@ impl DocumentDB {
     /// ```python
     /// db.insert("doc1", {"name": "Alice", "age": 30})
     /// ```
-    pub fn insert(&mut self, py: Python, doc_id: String, document: &PyDict) {
-        self.data.insert(doc_id, document.to_object(py));
+    pub fn insert(&mut self, py: Python, doc_id: String, document: &PyDict) -> PyResult<()> {
+        let mut data = self.data.lock().unwrap();
+        if data.contains_key(&doc_id) {
+            return Err(PyKeyError::new_err("Document ID already exists"));
+        }
+        data.insert(doc_id, document.to_object(py));
+        Ok(())
     }
-
     /// Retrieves a document by its identifier.
     ///
     /// # Arguments
@@ -77,9 +83,10 @@ impl DocumentDB {
     /// ```python
     /// document = db.get("doc1")
     /// ```
-    pub fn get(&self, py: Python, doc_id: &str) -> PyResult<Option<PyObject>> {
-        Ok(self.data.get(doc_id).cloned())
-    }
+    pub fn get(&self, _py: Python, doc_id: &str) -> PyResult<Option<PyObject>> {
+        let data = self.data.lock().unwrap();
+        Ok(data.get(doc_id).cloned())
+    }    
 
     /// Retrieves all documents stored in the database.
     ///
@@ -92,13 +99,10 @@ impl DocumentDB {
     /// ```python
     /// all_docs = db.get_all()
     /// ```
-    pub fn get_all(&self, py: Python) -> PyResult<HashMap<String, PyObject>> {
-        let mut result = HashMap::new();
-        for (key, value) in &self.data {
-            result.insert(key.clone(), value.clone());
-        }
-        Ok(result)
-    }
+    pub fn get_all(&self, _py: Python) -> PyResult<HashMap<String, PyObject>> {
+        let data = self.data.lock().unwrap();
+        Ok(data.clone())
+    }    
 
     /// Deletes a document by its identifier.
     ///
@@ -112,7 +116,8 @@ impl DocumentDB {
     /// db.delete("doc1")
     /// ```
     pub fn delete(&mut self, doc_id: &str) {
-        self.data.remove(doc_id);
+        let mut data = self.data.lock().unwrap();
+        data.remove(doc_id);
     }
 
     /// Updates a document by its identifier.
@@ -128,8 +133,9 @@ impl DocumentDB {
     /// db.update("doc1", {"name": "Bob", "age": 25})
     /// ```
     pub fn update(&mut self, py: Python, doc_id: String, document: &PyDict) {
-        if self.data.contains_key(&doc_id) {
-            self.data.insert(doc_id, document.to_object(py));
+        let mut data = self.data.lock().unwrap();
+        if data.contains_key(&doc_id) {
+            data.insert(doc_id, document.to_object(py));
         }
     }
 
@@ -152,7 +158,8 @@ impl DocumentDB {
         let temp_path = Path::new(&self.file_path).with_extension("tmp");
         let mut temp_file = File::create(&temp_path).map_err(|e| PyErr::new::<PyOSError, _>(e.to_string()))?;
 
-        for (doc_id, doc) in &self.data {
+        let data = self.data.lock().unwrap();
+        for (doc_id, doc) in data.iter() {
             let id_len = doc_id.len() as u64;
             let doc_str = doc.to_string();
             let doc_bytes = doc_str.into_bytes();
@@ -192,9 +199,10 @@ impl DocumentDB {
         if !path.exists() {
             return Ok(());
         }
-
+    
         let mut file = File::open(path).map_err(|e| PyErr::new::<PyOSError, _>(e.to_string()))?;
-        self.data.clear();
+        let mut data = self.data.lock().unwrap();
+        data.clear();
 
         let mut buffer = [0; 8];
         while let Ok(_) = file.read_exact(&mut buffer) {
@@ -215,7 +223,7 @@ impl DocumentDB {
             let doc_str = String::from_utf8(doc_bytes).map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
             let doc = PyString::new(py, &doc_str).into();
 
-            self.data.insert(doc_id, doc);
+            data.insert(doc_id, doc);
         }
 
         if let Err(e) = file.read_exact(&mut buffer) {
@@ -230,7 +238,7 @@ impl DocumentDB {
 
 
 #[pymodule]
-fn memodocs(py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<DocumentDB>()?;
+fn memodocs(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_class::<MemoDocsDB>()?;
     Ok(())
 }

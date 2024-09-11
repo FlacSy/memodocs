@@ -1,5 +1,5 @@
 import time
-from memodocs import DocumentDB
+from memodocs import MemoDocsDB
 
 
 def benchmark_insert(db, num_docs):
@@ -24,10 +24,10 @@ def benchmark_delete(db, num_docs):
     print(f"Time taken to delete {num_docs} documents: {end_time - start_time:.4f} seconds")
 
 if __name__ == "__main__":
-    db = DocumentDB('db.dbd')
+    db = MemoDocsDB('db.dbd')
     num_docs = 100000
 
     benchmark_insert(db, num_docs)
     benchmark_query(db, num_docs)
     benchmark_delete(db, num_docs)
-    db.save_to_disk()
+    db.save()
